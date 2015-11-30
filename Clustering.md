@@ -1,0 +1,1659 @@
+﻿# 2.集群化
+## 2.1.集群
+Ignite具有非常先进的集群能力，包括逻辑集群组和自发现。
+Ignite节点之间会自动发现对方，这有助于必要时扩展集群，而不需要重启集群。开发者可以利用Ignite的混合云支持，允许公有云（比如AWS）和私有云之间建立连接。
+特性一览：
+
+ - 通过`IgniteDiscoverySpi`实现的可插拔的设计；
+ - 动态网络拓扑管理；
+ - 在局域网、广域网以及AWS上的自动发现；
+ - 随需直接部署；
+
+### 2.1.1.IgniteCluster
+集群的功能是通过`IgniteCluster`接口提供的，可以像下面这样从`Ignite`中获得一个`IgniteCluster`的实例：
+```java
+Ignite ignite = Ignition.ignite();
+IgniteCluster cluster = ignite.cluster();
+```
+通过`IgniteCluster`接口可以：
+
+ - 启动和停止一个远程集群节点；
+ - 获取集群成员的列表；
+ - 创建逻辑`集群组`；
+
+### 2.1.2.ClusterNode
+`ClusterNode`接口具有非常简洁的API，他只处理集群中的几点，把他视为网络中的逻辑端点，他有一个唯一的ID，节点的元数据信息，静态属性集以及一些其他的参数。
+
+### 2.1.3.集群节点属性
+所有的集群节点在启动时都会自动地注册环境和系统的参数，把他们作为节点的属性，开发者也可以通过配置添加自定义的节点属性。
+```xml
+<bean class="org.apache.ignite.IgniteConfiguration">
+    ...
+    <property name="userAttributes">
+        <map>
+            <entry key="ROLE" value="worker"/>
+        </map>
+    </property>
+    ...
+</bean>
+```
+下面的代码显示了如何获得节点的自定义属性：
+```java
+ClusterGroup workers = ignite.cluster().forAttribute("ROLE", "worker");
+Collection<ClusterNode> nodes = workers.nodes();
+```
+> 所有的节点属性都是通过`ClusterNode.attribute("propertyName")`方法获得的。
+
+### 2.1.4.集群节点元数据
+Ignite自动收集所有集群节点的元数据，元数据是在后台收集的并且被集群节点之间的每一次心跳消息交换所更新。
+节点元数据是通过`ClusterMetrics`接口体现的，他包括至少50种指标（注意，同样的指标也可以用于集群组）。
+下面的例子显示了获取一些元数据信息，包括本地节点的平均CPU负载，已用堆大小：
+```java
+// Local Ignite node.
+ClusterNode localNode = cluster.localNode();
+
+// Node metrics.
+ClusterMetrics metrics = localNode.metrics();
+
+// Get some metric values.
+double cpuLoad = metrics.getCurrentCpuLoad();
+long usedHeap = metrics.getHeapMemoryUsed();
+int numberOfCores = metrics.getTotalCpus();
+int activeJobs = metrics.getCurrentActiveJobs();
+```
+### 2.1.5.本地集群节点
+本地集群节点是`ClusterNode`的一个实例，表示当前的Ignite节点。
+下面的例子显示如何获得本地节点：
+```java
+ClusterNode localNode = ignite.cluster().localNode();
+```
+## 2.2.集群组
+`ClusterGroup`表示集群内节点的一个逻辑组。
+从设计上讲，所有集群节点都是平等的，所以没有必要以一个特定的顺序启动任何节点，或者给他们赋予特定的规则。然而，Ignite可以因为一些应用的特殊需求而创建集群节点的逻辑组，比如，可能希望只在远程节点上部署一个服务，或者给部分worker节点赋予一个叫做‘worker’的规则来做作业的执行。
+
+> `IgniteCluster`接口也是一个集群组，只不过包括集群内的所有节点。
+可以限制作业执行、服务部署、消息、事件以及其他任务只在部分集群组内执行，比如，下面这个例子只把作业广播到远程节点（除了本地节点）：
+
+```java
+final Ignite ignite = Ignition.ignite();
+
+IgniteCluster cluster = ignite.cluster();
+
+// Get compute instance which will only execute
+// over remote nodes, i.e. not this node.
+IgniteCompute compute = ignite.compute(cluster.forRemotes());
+
+// Broadcast to all remote nodes and print the ID of the node 
+// on which this closure is executing.
+compute.broadcast(() -> System.out.println("Hello Node: " + ignite.cluster().localNode().id()));
+```
+### 2.2.1.预定义集群组
+可以基于任何谓词创建集群组，为了方便Ignite也提供了一些预定义的集群组。
+下面的例子显示了`ClusterGroup`接口中定义的部分集群组：
+```java
+IgniteCluster cluster = ignite.cluster();
+
+// Cluster group with remote nodes, i.e. other than this node.
+ClusterGroup remoteGroup = cluster.forRemotes();
+```
+### 2.2.2.带节点属性的集群组
+Ignite的唯一特点是所有节点都是平等的。没有master节点或者server节点，也没有worker节点或者client节点，按照Ignite的观点所有节点都是平等的。但是，开发者可以将节点配置成master，worker，或者client以及data节点。
+所有集群节点启动时都会自动将所有的环境和系统属性注册为节点的属性，开发者也可以通过配置自定义节点属性。
+XML：
+```xml
+<bean class="org.apache.ignite.IgniteConfiguration">
+    ...
+    <property name="userAttributes">
+        <map>
+            <entry key="ROLE" value="worker"/>
+        </map>
+    </property>
+    ...
+</bean>
+```
+Java：
+```java
+IgniteConfiguration cfg = new IgniteConfiguration();
+
+Map<String, String> attrs = Collections.singletonMap("ROLE", "worker");
+
+cfg.setUserAttributes(attrs);
+
+// Start Ignite node.
+Ignite ignite = Ignition.start(cfg);
+```
+> 节点属性是通过`ClusterNode.attribute("propertyName")`属性获得的。
+下面的例子显示了如何获得赋予了‘worker’属性值的节点：
+
+```java
+IgniteCluster cluster = ignite.cluster();
+
+ClusterGroup workerGroup = cluster.forAttribute("ROLE", "worker");
+
+Collection<GridNode> workerNodes = workerGroup.nodes();
+```
+### 2.2.3.自定义集群组
+可以基于一些谓词定义动态集群组，这个集群组只会包含符合该谓词的节点。
+下面是一个例子，一个集群组只会包括CPU利用率小于50%的节点，注意这个组里面的节点会随着CPU负载的变化而改变。
+```java
+IgniteCluster cluster = ignite.cluster();
+
+// Nodes with less than 50% CPU load.
+ClusterGroup readyNodes = cluster.forPredicate((node) -> node.metrics().getCurrentCpuLoad() < 0.5);
+```
+### 2.2.4.集群组组合
+可以通过彼此之间的嵌套来组合集群组，比如，下面的代码片段显示了如何通过组合远程组和随机组来获得一个随机的远程节点：
+```java
+// Group containing oldest node out of remote nodes.
+ClusterGroup oldestGroup = cluster.forRemotes().forOldest();
+
+ClusterNode oldestNode = oldestGroup.node();
+```
+### 2.2.5.从集群组中获得节点
+可以像下面这样获得各种集群组的节点：
+```java
+ClusterGroup remoteGroup = cluster.forRemotes();
+
+// All cluster nodes in the group.
+Collection<ClusterNode> grpNodes = remoteGroup.nodes();
+
+// First node in the group (useful for groups with one node).
+ClusterNode node = remoteGroup.node();
+
+// And if you know a node ID, get node by ID.
+UUID myID = ...;
+
+node = remoteGroup.node(myId);
+```
+### 2.2.6.集群组元数据
+Ignite自动收集所有集群节点的元数据，很酷的事是集群组会自动地收集组内所有节点的元数据，然后提供组内正确的平均值，最小值，最大值等信息。
+集群组元数据是通过`ClusterMetrics`接口体现的，他包括了超过50个指标（注意，同样的指标单独的集群节点也有）。
+下面的例子是获取一些元数据，包括所有远程节点的平均CPU利用率以及可用堆大小：
+```java
+// Cluster group with remote nodes, i.e. other than this node.
+ClusterGroup remoteGroup = ignite.cluster().forRemotes();
+
+// Cluster group metrics.
+ClusterMetrics metrics = remoteGroup.metrics();
+
+// Get some metric values.
+double cpuLoad = metrics.getCurrentCpuLoad();
+long usedHeap = metrics.getHeapMemoryUsed();
+int numberOfCores = metrics.getTotalCpus();
+int activeJobs = metrics.getCurrentActiveJobs();
+```
+## 2.3.领导者选举
+当工作在分布式环境中时，有时需要确保有这么一个节点，不管网络是否发生变化，这个节点通常被叫做`leader（领导者）`。
+很多系统选举领导者通常要处理数据一致性，然后通常是通过收集集群成员的选票处理的。而在Ignite中，数据一致性是通过数据网格的类似功能处理的（Rendezvous Hashing或者HRW哈希），选择领导者在传统意义上的数据一致性，在数据网格以外就不是真的需要了。
+然而，可能还是希望有一个`协调员`节点来处理某些任务，为了这个，Ignite允许在集群中自动地选择最老的或者最新的节点。
+`使用服务网格`：注意对于大多数`领导者`或者`类单例`用例中，建议使用`服务网格`功能，他可以自动地部署各个`集群单例服务`，而且更易于使用。
+
+### 2.3.1.最老的节点
+每当新节点加入时，最老的节点都有一个保持不变的属性，集群中的最老节点唯一发生变化的时间点就是它从集群中退出或者该节点故障。
+下面的例子显示了如何选择一个集群组，他只包含了最老的节点。
+```java
+IgniteCluster cluster = ignite.cluster();
+
+// Dynamic cluster group representing the oldest cluster node.
+// Will automatically shift to the next oldest, if the oldest
+// node crashes.
+ClusterGroup oldestNode = cluster.forOldest();
+```
+### 2.3.2.最新的节点
+最新的节点，与最老的节点不同，每当新节点加入集群时都会不断发生变化，然而，有时他也会变得很灵活，尤其是如果希望只在最新的节点上执行一些任务时。
+下面的例子显示了如何选择一个集群组，他只包含了最新的节点。
+```java
+gniteCluster cluster = ignite.cluster();
+
+// Dynamic cluster group representing the youngest cluster node.
+// Will automatically shift to the next oldest, if the oldest
+// node crashes.
+ClusterGroup youngestNode = cluster.forYoungest();
+```
+> 一旦获得了集群组，就可以用它执行任务，部署服务，发送消息等。
+
+## 2.4.集群配置
+Ignite中，通过`DiscoverySpi`节点可以彼此发现对方，Ignite提供了`TcpDiscoverySpi`作为`DiscoverySpi`的默认实现，它使用TCP/IP来作为节点发现的实现，可以配置成基于多播的或者基于静态IP的。
+
+### 2.4.1.基于多播的发现
+`TcpDiscoveryMulticastIpFinder`使用多播来发现网格内的每个节点。他也是默认的IP搜索器。除非打算覆盖默认的设置不需要指定他。
+下面的例子显示了如何通过Spring XML配置文件以及通过Java代码编程式地进行配置：
+Java：
+```java
+TcpDiscoverySpi spi = new TcpDiscoverySpi();
+ 
+TcpDiscoveryVmIpFinder ipFinder = new TcpDiscoveryMulticastIpFinder();
+ 
+ipFinder.setMulticastGroup("228.10.10.157");
+ 
+spi.setIpFinder(ipFinder);
+ 
+IgniteConfiguration cfg = new IgniteConfiguration();
+ 
+// Override default discovery SPI.
+cfg.setDiscoverySpi(spi);
+ 
+// Start Ignite node.
+Ignition.start(cfg);
+```
+XML：
+```xml
+<bean class="org.apache.ignite.configuration.IgniteConfiguration">
+  ...
+  <property name="discoverySpi">
+    <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+      <property name="ipFinder">
+        <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.multicast.TcpDiscoveryMulticastIpFinder">
+          <property name="multicastGroup" value="228.10.10.157"/>
+        </bean>
+      </property>
+    </bean>
+  </property>
+</bean>
+```
+### 2.4.2.基于静态IP的发现
+对于多播被禁用的情况，`TcpDiscoveryVmIpFinder`会使用预配置的IP地址列表，开发者只需要提供至少一个远程节点的IP地址即可，但是为了保证冗余一个比较好的做法是提供2-3个网格节点的IP地址。如果建立了与任何一个已提供的IP地址的连接，Ignite就会自动地发现其他的所有节点。
+
+> 不用指定所有Ignite节点的IP地址，只需要希望首先启动的一部分节点的IP即可。
+
+下面的例子显示了如何通过Spring XML配置文件以及通过Java代码编程式地进行配置：
+XML：
+```xml
+<bean class="org.apache.ignite.configuration.IgniteConfiguration">
+  ...
+  <property name="discoverySpi">
+    <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+      <property name="ipFinder">
+        <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.vm.TcpDiscoveryVmIpFinder">
+          <property name="addresses">
+            <list>
+              <value>1.2.3.4</value>
+              
+              <!-- 
+                  IP Address and optional port range.
+                  You can also optionally specify an individual port.
+              -->
+              <value>1.2.3.5:47500..47509</value>
+            </list>
+          </property>
+        </bean>
+      </property>
+    </bean>
+  </property>
+</bean>
+```
+Java：
+```java
+TcpDiscoverySpi spi = new TcpDiscoverySpi();
+ 
+TcpDiscoveryVmIpFinder ipFinder = new TcpDiscoveryVmIpFinder();
+ 
+// Set initial IP addresses.
+// Note that you can optionally specify a port or a port range.
+ipFinder.setAddresses(Arrays.asList("1.2.3.4", "1.2.3.5:47500..47509"));
+ 
+spi.setIpFinder(ipFinder);
+ 
+IgniteConfiguration cfg = new IgniteConfiguration();
+ 
+// Override default discovery SPI.
+cfg.setDiscoverySpi(spi);
+ 
+// Start Ignite node.
+Ignition.start(cfg);
+```
+
+> `TcpDiscoveryVmIpFinder`默认用的是`非共享`模式，该模式中IP地址列表也应该包括本地节点的IP地址，这样在其他远程节点还没启动的情况下该节点会成为集群的第一个节点。
+
+### 2.4.3.基于多播和静态IP的发现
+可以同时使用基于多播和静态IP的发现，这种情况下，除了通过多播接受地址以外，如果有的话，`TcpDiscoveryMulticastIpFinder`也可以与预配置的静态IP地址列表一起工作，就像上面描述的基于静态IP的发现一样。
+下面的例子显示了如何配置使用了静态IP地址的多播IP搜索器。
+XML：
+```xml
+<bean class="org.apache.ignite.configuration.IgniteConfiguration">
+  ...
+  <property name="discoverySpi">
+    <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+      <property name="ipFinder">
+        <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.multicast.TcpDiscoveryMulticastIpFinder">
+          <property name="multicastGroup" value="228.10.10.157"/>
+           
+          <!-- list of static IP addresses-->
+          <property name="addresses">
+            <list>
+              <value>1.2.3.4</value>
+              
+              <!-- 
+                  IP Address and optional port range.
+                  You can also optionally specify an individual port.
+              -->
+              <value>1.2.3.5:47500..47509</value>
+            </list>
+          </property>
+        </bean>
+      </property>
+    </bean>
+  </property>
+</bean>
+```
+Java：
+```java
+TcpDiscoverySpi spi = new TcpDiscoverySpi();
+ 
+TcpDiscoveryVmIpFinder ipFinder = new TcpDiscoveryMulticastIpFinder();
+ 
+// Set Multicast group.
+ipFinder.setMulticastGroup("228.10.10.157");
+
+// Set initial IP addresses.
+// Note that you can optionally specify a port or a port range.
+ipFinder.setAddresses(Arrays.asList("1.2.3.4", "1.2.3.5:47500..47509"));
+ 
+spi.setIpFinder(ipFinder);
+ 
+IgniteConfiguration cfg = new IgniteConfiguration();
+ 
+// Override default discovery SPI.
+cfg.setDiscoverySpi(spi);
+ 
+// Start Ignite node.
+Ignition.start(cfg);
+```
+### 2.4.4.基于Apache Jcloud的发现
+参照`2.8.JCoud集成`章节
+
+### 2.4.5.基于Amazon S3的发现
+参照`2.6.Amazon AWS集成`章节
+
+### 2.4.6.基于GCS的发现
+参照`2.7.Google云集成`章节
+
+### 2.4.7.基于JDBC的发现
+可以有一个数据库，作为通用共享存储保存着初始的IP地址，这些节点会在启动时将IP地址写入数据库，这事通过`TcpDiscoveryJdbcIpFinder`实现的。
+XML：
+```xml
+<bean class="org.apache.ignite.configuration.IgniteConfiguration">
+  ...
+  <property name="discoverySpi">
+    <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+      <property name="ipFinder">
+        <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.jdbc.TcpDiscoveryJdbcIpFinder">
+          <property name="dataSource" ref="ds"/>
+        </bean>
+      </property>
+    </bean>
+  </property>
+</bean>
+
+<!-- Configured data source instance. -->
+<bean id="ds" class="some.Datasource">
+  ...
+</bean>
+```
+Java：
+```java
+TcpDiscoverySpi spi = new TcpDiscoverySpi();
+
+// Configure your DataSource.
+DataSource someDs = MySampleDataSource(...);
+
+TcpDiscoveryJdbcIpFinder ipFinder = new TcpDiscoveryJdbcIpFinder();
+
+ipFinder.setDataSource(someDs);
+
+spi.setIpFinder(ipFinder);
+
+IgniteConfiguration cfg = new IgniteConfiguration();
+ 
+// Override default discovery SPI.
+cfg.setDiscoverySpi(spi);
+ 
+// Start Ignite node.
+Ignition.start(cfg);
+```
+
+### 2.4.8.故障检测超时
+故障检测超时用于确定一个集群节点在与远程节点连接失败时等待多长时间，根据集群的硬件和网络条件，这个超时时间是最简单的方式来调整发现SPI的故障检测功能。
+
+> 超时自动控制这些`TcpDiscoverySpi`的配置参数，比如套接字超时，消息确认超时以及其他的，如果显式地设置了这些参数中的任意一个，故障超时设置都会被忽略掉。
+
+故障检测超时是通过`IgniteConfiguration.setFailureDetectionTimeout(long failureDetectionTimeout)`方法来配置的，默认值是10秒，这个时间可以使发现SPI在大多数的硬件和虚拟环境下可靠地工作，但是这已经使故障检测很糟糕了。对于一个稳定低延迟网络来说，这个参数设置成大约200毫秒会更有助于快速地进行故障的检测和响应。
+
+## 2.5.零部署
+计算所需的闭包和任务可能是任意自定义的类，也包括匿名类。Ignite中， 远程节点会自动感知这些类，不需要显式地将任何jar文件部署或者移动到任何远程节点上。
+这个行为是通过对等类加载（P2P类加载）实现的，他是Ignite中的一个特别的分布式类加载器，实现了节点间的字节码交换。当对等类加载启用时，不需要在网格内的每个节点上手工地部署Java或者Scala代码，也不需要每次在发生变化时重新部署。
+下面的代码由于对等类加载会在所有的远程节点上运行，不需要任何的显式部署步骤：
+```java
+IgniteCluster cluster = ignite.cluster();
+
+// Compute instance over remote nodes.
+IgniteCompute compute = ignite.compute(cluster.forRemotes());
+
+// Print hello message on all remote nodes.
+compute.broadcast(() -> System.out.println("Hello node: " + cluster.localNode().id()));
+```
+下面是对等类加载如何配置：
+XML：
+```xml
+<bean class="org.apache.ignite.configuration.IgniteConfiguration">
+    ...   
+    <!-- Explicitly enable peer class loading. -->
+    <property name="peerClassLoadingEnabled" value="true"/>
+    ...
+</bean>
+```
+Java：
+```java
+IgniteConfiguration cfg = new IgniteConfiguration();
+
+cfg.setPeerClassLoadingEnabled(true);
+
+// Start Ignite node.
+Ignite ignite = Ignition.start(cfg);
+```
+对等类加载的工作步骤如下：
+
+ 1. Ignite会检查类是否在本地CLASSPATH中有效（是否在系统启动时加载），如果有效，就会被返回。这时不会发生从对等节点加载类的行为。
+ 2. 如果类本地不可用，会向初始节点发送一个提供类定义的请求，初始节点会发送类字节码定义然后类会在工作节点上加载。这个每个类只会发生一次-一旦一个节点上一个类定义被加载了，他就不会再次加载了。
+
+`开发环境和生产环境`：
+建议在生产环境中禁用对等类加载，通常我们希望有一个可控的生产环境。要显式地部署类，可以拷贝他们到Ignite的`libs`文件夹或者手工将他们加入每个节点的类路径。
+
+`热部署自动缓存清理`：
+每当改变了存储在缓存中的类定义时，Ignite会在对等部署新数据之前自动清理缓存中之前的类定义，以避免类加载冲突。
+
+`第三方库`：
+当使用对等类加载时，会发现可能从对等节点加载库，还可能本地类路径就已经存在库。建议在每个节点的类路径里包含所有的第三方库，这可以通过将jar文件复制到Ignite的`libs`文件夹实现，这样就可以避免每次只改变了一行代码然后还需要向远程节点上传输若干M的第三方库文件。
+
+### 2.5.1.显式部署
+要在Ignite中显式地部署jar文件，可以将他们拷贝进每个集群节点的`libs`文件夹，Ignite会在启动时自动加载所有的`libs`文件夹中的jar文件。
+
+## 2.6.Amazon AWS集成
+AWS云上的节点发现通常认为很有挑战性。Amazon EC2，和其他大部分的虚拟环境一样，有如下的限制：
+
+ - 多播被禁用
+ - 每次新的映像启动时TCP地址会发生变化
+
+虽然在没有多播时可以使用基于TCP的发现，但是不得不处理不断变换的IP地址以及不断更新配置。这产生了一个主要的不便之处以至于在这种环境下基于静态IP的配置实质上变得不可用。
+
+### 2.6.1.基于Amazon S3的发现
+为了减轻不断变化的IP地址的问题，Ignite支持通过使用基于`TcpDiscoveryS3IpFinder`的S3存储来实现节点的自动发现。在启动时节点在Amazon S3存储上注册他们的IP地址，这样其他节点会试图连接任意存储在S3上的IP地址然后初始化网格节点的自动发现。
+
+> 这个方法可以只配置一次就可以在所有的EC2实例上复用。
+下面的例子显示了如何配置基于Amazon S3的IP搜索器：
+
+XML：
+```xml
+<bean class="org.apache.ignite.configuration.IgniteConfiguration">
+  ...
+  <property name="discoverySpi">
+    <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+      <property name="ipFinder">
+        <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.s3.TcpDiscoveryS3IpFinder">
+          <property name="awsCredentials" ref="aws.creds"/>
+          <property name="bucketName" value="YOUR_BUCKET_NAME"/>
+        </bean>
+      </property>
+    </bean>
+  </property>
+</bean>
+ <!-- AWS credentials. Provide your access key ID and secret access key. -->
+<bean id="aws.creds" class="com.amazonaws.auth.BasicAWSCredentials">
+  <constructor-arg value="YOUR_ACCESS_KEY_ID" />
+  <constructor-arg value="YOUR_SECRET_ACCESS_KEY" />
+</bean>
+```
+Java：
+```java
+TcpDiscoverySpi spi = new TcpDiscoverySpi();
+BasicAWSCredentials creds = new BasicAWSCredentials("yourAccessKey", "yourSecreteKey");
+TcpDiscoveryS3IpFinder ipFinder = new TcpDiscoveryS3IpFinder();
+ipFinder.setAwsCredentials(creds);
+spi.setIpFinder(ipFinder);
+IgniteConfiguration cfg = new IgniteConfiguration();
+// Override default discovery SPI.
+cfg.setDiscoverySpi(spi);
+// Start Ignite node.
+Ignition.start(cfg);
+```
+
+## 2.7.Google云集成
+GCE上的节点发现通常认为很有挑战性。Google云，和其他大部分的虚拟环境一样，有如下的限制：
+
+ - 多播被禁用
+ - 每次新的映像启动时TCP地址会发生变化
+
+虽然在没有多播时可以使用基于TCP的发现，但是不得不处理不断变换的IP地址以及不断更新配置。这产生了一个主要的不便之处以至于在这种环境下基于静态IP的配置实质上变得不可用。
+
+### 2.7.1.基于Google云存储的发现
+为了减轻不断变化的IP地址的问题，Ignite支持通过使用基于`TcpDiscoveryGoogleStorageIpFinder`的Google云存储来实现节点的自动发现。在启动时节点在存储上注册他们的IP地址，这样其他节点会试图连接任意保存在存储上的IP地址然后初始化网格节点的自动发现。
+
+> 这个方法可以只配置一次就可以在所有的EC2实例上复用。
+
+下面的例子显示了如何配置基于Google云存储的IP搜索器：
+XML：
+```xml
+<bean class="org.apache.ignite.configuration.IgniteConfiguration">
+  ...
+  <property name="discoverySpi">
+    <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+      <property name="ipFinder">
+        <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.gce.TcpDiscoveryGoogleStorageIpFinder">
+          <property name="projectName" ref="YOUR_GOOGLE_PLATFORM_PROJECT_NAME"/>
+          <property name="bucketName" value="YOUR_BUCKET_NAME"/>
+          <property name="serviceAccountId" value="YOUR_SERVICE_ACCOUNT_ID"/>
+          <property name="serviceAccountP12FilePath" value="PATH_TO_YOUR_PKCS12_KEY"/>
+        </bean>
+      </property>
+    </bean>
+  </property>
+</bean>
+```
+Java：
+```java
+TcpDiscoverySpi spi = new TcpDiscoverySpi();
+TcpDiscoveryGoogleStorageIpFinder ipFinder = new TcpDiscoveryGoogleStorageIpFinder();
+ipFinder.setServiceAccountId(yourServiceAccountId);
+ipFinder.setServiceAccountP12FilePath(pathToYourP12Key);
+ipFinder.setProjectName(yourGoogleClourPlatformProjectName);
+// Bucket name must be unique across the whole Google Cloud Platform.
+ipFinder.setBucketName("your_bucket_name");
+spi.setIpFinder(ipFinder);
+IgniteConfiguration cfg = new IgniteConfiguration();
+// Override default discovery SPI.
+cfg.setDiscoverySpi(spi);
+// Start Ignite node.
+Ignition.start(cfg);
+```
+
+## 2.8.JCloud集成
+云平台上的节点发现通常认为很有挑战性。Google云，和其他大部分的虚拟环境一样，有如下的限制：
+
+ - 多播被禁用
+ - 每次新的映像启动时TCP地址会发生变化
+
+虽然在没有多播时可以使用基于TCP的发现，但是不得不处理不断变换的IP地址以及不断更新配置。这产生了一个主要的不便之处以至于在这种环境下基于静态IP的配置实质上变得不可用。
+
+### 2.8.1.基于Apache JCloud的发现
+为了减轻不断变化的IP地址的问题，Ignite支持通过使用基于`TcpDiscoveryCloudIpFinder`的Apache jclouds工具包来实现节点的自动发现。要了解有关Apache JCloud的信息，请参照[jclouds.apache.org](https://jclouds.apache.org/)。
+该IP搜索器形成节点地址，通过获取云上所有虚拟机的私有和共有IP地址以及给他们增加一个端口号使Ignite可以运行，该端口可以通过`TcpDiscoverySpi.setLocalPort(int)`或者`TcpDiscoverySpi.DFLT_PORT`进行设置，这样所有节点会连接任何生成的的IP地址然后初始化网格节点的自动发现。
+可以参考[Apache jclouds providers section](https://jclouds.apache.org/reference/providers/#compute)来获取他支持的云平台的列表。
+
+> 所有虚拟机都要使用同一个端口启动Ignite实例，否则他们无法通过IP搜索器发现对方。
+
+下面的例子显示了如何配置基于Apache JCloud的IP搜索器：
+XML：
+```xml
+<bean class="org.apache.ignite.configuration.IgniteConfiguration">
+  ...
+  <property name="discoverySpi">
+    <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+      <property name="ipFinder">
+        <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.cloud.TcpDiscoveryCloudIpFinder"/>
+        <!-- Configuration for Google Compute Engine. -->
+        <property name="provider" value="google-compute-engine"/>
+        <property name="identity" value="YOUR_SERVICE_ACCOUNT_EMAIL"/>
+        <property name="credentialPath" value="PATH_YOUR_PEM_FILE"/>
+        <property name="zones">
+          <list>
+            <value>us-central1-a</value>
+            <value>asia-east1-a</value>
+          </list>
+        </property>
+        </bean>
+      </property>
+    </bean>
+  </property>
+</bean>
+```
+Java：
+```java
+TcpDiscoverySpi spi = new TcpDiscoverySpi();
+TcpDiscoveryCloudIpFinder ipFinder = new TcpDiscoveryCloudIpFinder();
+// Configuration for AWS EC2.
+ipFinder.setProvider("aws-ec2");
+ipFinder.setIdentity(yourAccountId);
+ipFinder.setCredential(yourAccountKey);
+ipFinder.setRegions(Collections.<String>emptyList().add("us-east-1"));
+ipFinder.setZones(Arrays.asList("us-east-1b", "us-east-1e"));
+spi.setIpFinder(ipFinder);
+IgniteConfiguration cfg = new IgniteConfiguration();
+// Override default discovery SPI.
+cfg.setDiscoverySpi(spi);
+// Start Ignite node.
+Ignition.start(cfg);
+```
+## 2.9.网络配置
+`CommunicationSpi`为发送和接收网格消息提供了基本的管道，他也被用于所有的分布式网格操作，比如执行任务，监控数据交换，分布式事件查询以及其他的。Ignite提供了`TcpCommunicationSpi`作为`CommunicationSpi`的默认实现，它使用TCP/IP协议来进行节点间的通信。
+要启用节点间的通信，`TcpCommunicationSpi`增加了`TcpCommuncationSpi.ATTR_ADDRS`和`TcpCommuncationSpi.ATTR_PORT`本地节点属性。启动时，这个SPI会监听由`TcpCommuncationSpi.setLocalPort(int)`方法设置的本地端口。如果端口被占用，SPI会自动增加端口号直到成功绑定监听。
+`TcpCommuncationSpi.setLocalPortRange(int)`配置参数控制了SPI可以尝试的最大端口数量。
+`本地端口范围`
+当在一台机器上甚至是在同一个JVM上启动多个网格节点时，端口范围会非常方便，这样的话所有的节点都会启动而不用一个个地进行单独的配置。
+下面的例子显示了如何调整`TcpCommuncationSpi`的参数：
+XML：
+```xml
+<bean class="org.apache.ignite.configuration.IgniteConfiguration">
+  ...
+  <property name="communicationSpi">
+    <bean class="org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi">
+      <!-- Override local port. -->
+      <property name="localPort" value="4321"/>
+    </bean>
+  </property>
+  ...
+</bean>
+```
+Java：
+```java
+TcpCommunicationSpi commSpi = new TcpCommunicationSpi();
+// Override local port.
+commSpi.setLocalPort(4321);
+IgniteConfiguration cfg = new IgniteConfiguration();
+// Override default communication SPI.
+cfg.setCommunicationSpi(commSpi);
+// Start grid.
+Ignition.start(cfg);
+```
+## 2.10.Docker部署
+Docker允许将Ignite应用及其所有的依赖打包进一个标准的容器，Docker会自动下载Ignite发布版，将代码部署进Ignite以及配置节点，他还可以自动启动配置好的Ignite节点。
+Ignite Docker容器可以以两种模式运行：
+
+### 2.10.1.从用户的Git仓库启动；
+如果配置了`GIT_REPO`参数Ignite Docker容器就会以这个模式启动。这时容器就会构建通过GIT仓库指定的工程然后启动部署了应用的Ignite，这样的集成允许部署新的代码只需要简单地重启Ignite Docker容器即可。
+可以用如下的命令拉取Ignite Docker容器：
+```bash
+sudo docker pull apacheignite/ignite-docker
+```
+可以用`docker run`来运行ignite Docker容器：
+```bash
+sudo docker run -it --net=host 
+-e "GIT_REPO=$GIT_REPO" 
+[-e "GIT_BRANCH=$GIT_BRANCH"]
+[-e "BUILD_CMD=$BUILD_CMD"]
+...
+apacheignite/ignite-docker
+```
+配置参数是通过docker容器的环境变量传递的，下面的配置参数都是有效的：
+<table>
+<tr>
+<td>
+名称
+</td>
+<td>
+描述
+</td>
+<td>
+可选
+</td>
+<td>
+默认值
+</td>
+<td>
+示例
+</td>
+</tr>
+<tr>
+<td>
+GIT_REPO
+</td>
+<td>
+GIT仓库地址
+</td>
+<td>
+否
+</td>
+<td>
+无
+</td>
+<td>
+https://github.com/bob/ignite-pojo
+</td>
+</tr>
+<tr>
+<td>
+GIT_BRANCH
+</td>
+<td>
+要构建的GIT分支
+</td>
+<td>
+是
+</td>
+<td>
+master
+</td>
+<td>
+sprint-1
+</td>
+</tr>
+<tr>
+<td>
+BUILD_CMD
+</td>
+<td>
+用于构建GIT工程的命令
+</td>
+<td>
+是
+</td>
+<td>
+mvn clean package
+</td>
+<td>
+mvn clean package -DskipTests=true
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_CONFIG
+</td>
+<td>
+Ignite配置文件的路径（可以相对于类路径的META-INF文件夹），下载的配置文件会保存到./ignite-config.xml
+</td>
+<td>
+是
+</td>
+<td>
+无
+</td>
+<td>
+https://raw.githubusercontent.com/bob/master/ignite-cfg.xml
+</td>
+</tr>
+<tr>
+<td>
+LIB_PATTERN
+</td>
+<td>
+如果设置了这个参数，Ignite Docker容器就会只拷贝匹配这个表达式的文件。
+</td>
+<td>
+是
+</td>
+<td>
+从目标文件夹拷贝所有jar文件
+</td>
+<td>
+libs/.*
+</td>
+</tr>
+<tr>
+<td>
+OPTION_LIBS
+</td>
+<td>
+类路径中包含的Ignite可选库
+</td>
+<td>
+是
+</td>
+<td>
+ignite-log4j,ignite-spring,ignite-indexing
+</td>
+<td>
+ignite-aws,ignite-aop
+</td>
+</tr>
+</table>
+示例：
+要从GIT仓库启动Ignite Docker容器，可移执行如下的命令：
+```bash
+sudo docker run -it --net=host 
+-e "GIT_REPO=https://github.com/TikhonovNikolay/docker-example.git" 
+apacheignite/ignite-docker
+```
+### 2.10.2.从干净的Ignite节点启动
+如果`GIT_REPO`参数未配置，那么Ignite Docker容器就会下载指定的或者最新的Ignite发行版，默认会下载最新的版本。
+可以通过如下命令拉取Ignite Docker容器：
+```bash
+sudo docker pull apacheignite/ignite-docker
+```
+可以通过`docker run`运行Ignite Docker容器：
+```bash
+sudo docker run -it --net=host 
+-e "IGNITE_VERSION=$IGNITE_VERSION" 
+[-e "IGNITE_CONFIG=$IGNITE_CONFIG"]
+[-e "OPTION_LIBS=$OPTION_LIBS"]
+...
+apacheignite/ignite-docker
+```
+配置参数是通过docker容器的环境变量传递的，下面的配置参数都是有效的：
+<table>
+<tr>
+<td>
+名称
+</td>
+<td>
+描述
+</td>
+<td>
+默认值
+</td>
+<td>
+示例
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_URL
+</td>
+<td>
+Ignite发行版的路径
+</td>
+<td>
+无
+</td>
+<td>
+http://apache-mirror.rbc.ru/pub/apache/incubator/ignite/1.1.0/apache-ignite-fabric-1.1.0-incubating-bin.zip
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_VERSION
+</td>
+<td>
+Ignite的版本
+</td>
+<td>
+latest
+</td>
+<td>
+1.4.0
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_SOURCE
+</td>
+<td>
+要下载的Ignite版本系列，如果这个参数被忽略，会被设置为IGNITE_VERSION的值。
+</td>
+<td>
+COMMUNITY
+</td>
+<td>
+APACHE
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_CONFIG
+</td>
+<td>
+Ignite配置文件的路径（可以相对于类路径的META-INF文件夹），下载的配置文件会保存到./ignite-config.xml
+</td>
+<td>
+无
+</td>
+<td>
+https://raw.githubusercontent.com/bob/master/ignite-cfg.xml
+</td>
+</tr>
+<tr>
+<td>
+OPTION_LIBS
+</td>
+<td>
+类路径中包含的Ignite可选库
+</td>
+<td>
+ignite-log4j, ignite-spring, ignite-indexing
+</td>
+<td>
+ignite-aws,ignite-aop
+</td>
+</tr>
+</table>
+示例：
+```bash
+sudo docker run -it --net=host -e "IGNITE_VERSION=1.1.0" apacheignite/ignite-docker
+```
+### 2.10.3.Google计算云部署
+要导入Ignite映像，可以执行如下命令：
+```bash
+gcloud compute images 
+  create <IMAGE_NAME> 
+  --source-uri gs://ignite-media/ignite-google-image-1.0.0.tar.gz
+```
+需要更多信息请参照[cloud.google.com](https://cloud.google.com/compute/docs/images#import_an_image
+
+ - 打开`Google Compute Console`；
+ - 打开`Compute->Compute Engine->VM instances`然后点击`New instance`；
+ - 在`Boot disk`部分点击`Change`按钮；
+ - 打开`Your image`然后选择导入的映像，在映像的快照中就能看到`ignite-name`名字；
+ - 点击`Management, disk, networking, access & security options`，就可以为Ignite Docker容器添加任何配置参数；
+ - 输入必要的字段然后运行实例；
+ - 连接到实例；
+ - 要访问执行的过程需要知道容器的id，下面的命令会显示容器的id：sudo docker ps
+ - 显示日志：sudo docker logs -f CONTAINER_ID
+ - 进入docker容器：sudo docker exec -it container_id /bin/bash
+
+### 2.10.4. Amazon EC2部署
+ - 选择必要的区域然后点击下表的连接：
+<table>
+<tr>
+<td>
+区域
+</td>
+<td>
+映像
+</td>
+</tr>
+<tr>
+<td>
+US-WEST
+</td>
+<td>
+<a href="https://console.aws.amazon.com/ec2/home?region=us-west-1#launchAmi=ami-5b53a41f">ami-5b53a41f</a>
+</td>
+</tr>
+<tr>
+<td>
+US-EAST
+</td>
+<td>
+<a href="https://console.aws.amazon.com/ec2/home?region=us-east-1#launchAmi=ami-3fa45e54">ami-3fa45e54</a>
+</td>
+</tr>
+<tr>
+<td>
+EU-CENTRAL
+</td>
+<td>
+<a href="https://console.aws.amazon.com/ec2/home?region=eu-central-1#launchAmi=ami-9c5f6481">ami-9c5f6481</a>
+</td>
+</tr>
+</table>
+ - 选择`Instance Type`；
+ - 打开`Configure Instance`然后展开`Advanced Details`部分；
+ - 为Ignite Docker容器添加任何配置参数；
+ - 在 Instance标签，为`name`项目赋值，比如`ignite-node`；
+ - 预览和运行实例；
+ - 连接到实例<a href="http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/AccessingInstances.html">http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/AccessingInstances.html</a>;
+ - 要访问执行过程，需要知道容器的id，可以用如下的命令获得：
+sudo docker ps
+ - 显示日志：
+sudo docker logs -f CONTAINER_ID
+ - 进入docker容器：
+sudo docker exec -it container_id /bin/bash
+
+## 2.11.Mesos部署
+Apache Ignite支持在Mesos集群上调度和运行Ignite节点。
+Apache Mesos是一个集群管理器，他提供了一个通用运行环境以及所有的必要资源来部署、运行和管理分布式应用。他对资源的管理和隔离有助于充分利用服务器资源。
+要了解Apache Mesos的更多信息，请参照：[http://mesos.apache.org/](http://mesos.apache.org/)
+
+### 2.11.1.Ignite Mesos框架
+典型的部署Apache Ignite集群需要下载Apache Ignite发行版，修改配置参数以及启动节点。Apache Ignite Mesos框架由`调度器`和`任务`组成，可以极大地简化集群的部署。
+
+ - `调度器`：调度器启动时将自己注册成Mesos主节点，一旦注册成功调度器就会开始处理从Mesos主节点到使用资源的Ignite节点的资源请求，调度器会维护Ignite集群所需的所有资源水平（CPU，内存等）；
+ - `任务`：从节点运行Ignite节点的实体。
+
+### 2.11.2.运行Ignite Mesos框架
+要运行Ignite Mesos框架需要配置好的正在运行的Apache Mesos集群，如果需要如何Apache Mesos集群的信息，请参照：[https://docs.mesosphere.com/getting-started/datacenter/install/](https://docs.mesosphere.com/getting-started/datacenter/install/)。
+
+> 确保主节点和从节点监听正确的IP地址，否则无法保证Mesos集群能正常工作。
+
+`通过Marathon运行框架`：
+当前建议的做法是通过Marathon运行框架。
+
+ - 安装Marathon，参照：[https://docs.mesosphere.com/getting-started/datacenter/install/](https://docs.mesosphere.com/getting-started/datacenter/install/)marathon章节；
+ - 下载Apache Ignite然后将`libs\optional\ignite-mesos\ignite-mesos-<ignite-version>-jar-with-dependencies.jar`上传到任意一个云存储（比如Amazon S3yun）；
+ - 拷贝下面的应用定义（JSON格式）然后保存成`marathon.json`文件，然后对参数做必要的修改，如果未对集群进行限制那么框架会试图占用Mesos集群的所有资源，可以看下面的`配置`章节；
+```json
+ {
+  "id": "ignition",
+  "instances": 1,
+  "cpus": 2,
+  "mem": 2048,
+  "ports": [0],
+  "uris": [
+    "http://host/ignite-mesos-<ignite-version>-jar-with-dependencies.jar"
+  ],
+  "env": {
+    "IGNITE_NODE_COUNT": "4",
+    "MESOS_MASTER_URL": "zk://localhost:2181/mesos",
+    "IGNITE_RUN_CPU_PER_NODE": "2",
+    "IGNITE_MEMORY_PER_NODE": "2048",
+    "IGNITE_VERSION": "1.0.5"
+  },
+  "cmd": "java -jar ignite-mesos-<ignite-version>-jar-with-dependencies.jar"
+}
+```
+ - 通过curl等工具发送应用定义的POST请求给Marathon：
+```bash
+curl -X POST -H "Content-type: application/json" --data-binary @marathon.json http://<marathon-ip>:8080/v2/apps/
+```
+
+ - 为了确保Apache Mesos框架部署正确，可以这么做，打开Marathon界面` http://<marathon-ip>:8080`，确保已有的应用名字为`ignition`而且状态是`Running`；
+ - 打开Mesos控制台`http://<master-ip>:5050`，如果一切正常那么任务的名字类似`Ignite node N`，状态是`RUNNING`。
+ - Mesos允许通过浏览器获得任务的日志，要查看Ignition的日志可以点击`Active Tasks`表格中的`Sandbox`；
+ - 点击`stdout`获取标准输出日志，`stderr`获取标准错误日志；
+`通过jar文件运行框架`：
+ - 下载Ignite包然后打开`libs\optional\ignite-mesos\`文件夹；
+ - 运行框架：java -jar ignite-mesos-<ignite-version>-jar-with-dependencies.jar 或者java -jar ignite-mesos-<ignite-version>-jar-with-dependencies.jar properties.prop，其中`properties.prop`是一个配置文件，如果不提供配置文件那么框架会试图占用Mesos集群的所有资源，下面是一个例子：
+```
+# The number of nodes in the cluster.
+IGNITE_NODE_COUNT=1
+# Mesos ZooKeeper URL to locate leading master.
+MESOS_MASTER_URL=zk://localhost:2181/mesos
+# The number of CPU Cores for each Apache Ignite node.
+IGNITE_RUN_CPU_PER_NODE=4
+# The number of Megabytes of RAM for each Apache Ignite node.
+IGNITE_MEMORY_PER_NODE=4096
+# The version ignite which will be run on nodes.
+IGNITE_VERSION=1.0.5
+```
+ - 为了确保Apache Mesos框架部署正确，可以这么做，打开Marathon界面` http://<marathon-ip>:5050`，确保已有的应用名字为`ignition`而且状态是`Running`；
+ - Mesos允许通过浏览器获得任务的日志，要查看Ignition的日志可以点击`Active Tasks`表格中的`Sandbox`；
+ - 点击`stdout`获取标准输出日志，`stderr`获取标准错误日志；
+
+### 2.11.3.配置
+所有配置都是通过环境变量或者配置文件处理的（这非常适用于简化marathon的配置以运行框架），下面的配置参数可以根据需要进行配置：
+<table>
+<tr>
+<td>
+名称
+</td>
+<td>
+描述
+</td>
+<td>
+默认值
+</td>
+<td>
+示例
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_RUN_CPU_PER_NODE
+</td>
+<td>
+每个Ignite节点的CPU核数
+</td>
+<td>
+没有限制
+</td>
+<td>
+2
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_MEMORY_PER_NODE
+</td>
+<td>
+每个节点的内存数量（M）
+</td>
+<td>
+没有限制
+</td>
+<td>
+1024
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_DISK_SPACE_PER_NODE
+</td>
+<td>
+每个节点占用的磁盘容量（M）
+</td>
+<td>
+1024
+</td>
+<td>
+2048
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_NODE_COUNT
+</td>
+<td>
+集群内的节点数量
+</td>
+<td>
+5
+</td>
+<td>
+10
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_TOTAL_CPU
+</td>
+<td>
+Ignite集群的CPU核数
+</td>
+<td>
+没有限制
+</td>
+<td>
+5
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_TOTAL_MEMORY
+</td>
+<td>
+Ignite集群占用的内存（M）
+</td>
+<td>
+没有限制
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_TOTAL_DISK_SPACE
+</td>
+<td>
+Ignite集群占用的磁盘空间（M）
+</td>
+<td>
+没有限制
+</td>
+<td>
+5120
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_MIN_CPU_PER_NODE
+</td>
+<td>
+要运行Ignite节点所需的CPU核数的最小值
+</td>
+<td>
+1
+</td>
+<td>
+4
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_MIN_MEMORY_PER_NODE
+</td>
+<td>
+要运行Ignite节点所需的内存的最小值（M）
+</td>
+<td>
+256
+</td>
+<td>
+1024
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_VERSION
+</td>
+<td>
+节点要运行的Ignite的版本
+</td>
+<td>
+latest
+</td>
+<td>
+1.0.5
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_WORK_DIR
+</td>
+<td>
+保存Ignite发行版的
+</td>
+<td>
+ignite-release
+</td>
+<td>
+/opt/ignite/
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_XML_CONFIG
+</td>
+<td>
+Apache Ignite配置文件的路径
+</td>
+<td>
+无
+</td>
+<td>
+/opt/ignite/ignite-config.xml
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_CONFIG_XML_URL
+</td>
+<td>
+Apache Ignite配置文件的URL
+</td>
+<td>
+无
+</td>
+<td>
+https://example.com/default-config.xml
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_USERS_LIBS
+</td>
+<td>
+要添加到类路径的库文件的路径
+</td>
+<td>
+无
+</td>
+<td>
+/opt/libs/
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_USERS_LIBS_URL
+</td>
+<td>
+要添加到类路径的库文件的URL列表，逗号分割
+</td>
+<td>
+无
+</td>
+<td>
+https://example.com/lib.zip,https://example.com/lib1.zip
+</td>
+</tr>
+<tr>
+<td>
+MESOS_MASTER_URL
+</td>
+<td>
+要定位主节点的Mesos Zookeeper的URL
+</td>
+<td>
+zk://localhost:2181/mesos
+</td>
+<td>
+zk://176.0.1.45:2181/mesos or 176.0.1.45:2181
+</td>
+</tr>
+</table>
+## 2.12.Yarn部署
+与Yarn的集成可以支持在Yarn集群上调度和运行Apache Ignite节点。
+Yarn是一个资源管理器，他提供了一个包括所有必要资源的通用的运行环境来进行分布式应用的部署，运行和管理，他对资源的管理和隔离有助于充分利用服务器资源。
+要了解Yarn的信息，请参照[http://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/YARN.html](http://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/YARN.html)。
+
+### 2.12.1.Ignite Yarn应用
+部署Apache Ignite集群的典型步骤是下载Ignite的发行版，修改配置文件以及启动节点。与Yarn的集成可以避免这些操作，Ignite Yarn应用可以极大的简化集群的部署，它由如下组件组成：
+
+ - 下载Ignite发行版，将必要的资源放入HDFS，创建启动任务的必要的上下文，启动`Application master`进程；
+ - `Application master`：一旦注册成功组件就会开始处理从资源管理器到使用资源的Ignite节点的资源请求，`Application master`会维护Ignite集群所需的所有资源水平（CPU，内存等）；
+ - `Container`：在从节点上运行Ignite节点的实体；
+
+### 2.12.2.运行Ignite Yarn应用
+要运行Ignite应用，需要配置和运行Yarn和Hadoop集群，要了解如何配置集群的信息，可以参照：[ http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/ClusterSetup.html](http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/ClusterSetup.html).
+
+ - 下载Ignite；
+ - 配置属性文件，修改必要的参数，可以参照下面的`配置`章节：
+```
+# The number of nodes in the cluster.
+IGNITE_NODE_COUNT=2
+# The number of CPU Cores for each Apache Ignite node.
+IGNITE_RUN_CPU_PER_NODE=1
+# The number of Megabytes of RAM for each Apache Ignite node.
+IGNITE_MEMORY_PER_NODE=2048
+# The version ignite which will be run on nodes.
+IGNITE_VERSION=1.0.6
+```
+ - 运行应用；
+```bash
+hadoop java jar ignite-yarn-<ignite-version>.jar ./ignite-yarn-<ignite-version>.jar cluster.properties
+```
+ - 为了确保应用正确部署，可以这样做：打开Yarn控制台http://<hostname>:8088/cluster，看名字为`Ignition`的应用是否工作正常；
+ - 可以从浏览器获得日志，要查看日志可以点击任意容器的`Logs`；
+ - 点击`stdout`获取标准输出日志，`stderr`获取标准错误日志；
+
+### 2.12.3.配置
+所有的配置都是通过环境变量和属性文件进行的，下面的配置参数可以根据需要进行配置：
+<table>
+<tr>
+<td>
+名称
+</td>
+<td>
+描述
+</td>
+<td>
+默认值
+</td>
+<td>
+示例
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_XML_CONFIG
+</td>
+<td>
+HDFS路径
+</td>
+<td>
+无
+</td>
+<td>
+/opt/ignite/ignite-config.xml
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_WORK_DIR
+</td>
+<td>
+用于保存Ignition发行版的目录
+</td>
+<td>
+./ignite-release
+</td>
+<td>
+/opt/ignite/
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_RELEASES_DIR
+</td>
+<td>
+保存Ignite发行版的HDFS路径。
+</td>
+<td>
+/ignite/releases/
+</td>
+<td>
+/ignite-rel/
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_USERS_LIBS
+</td>
+<td>
+要添加到CLASSPATH的库文件的HDFS路径。
+</td>
+<td>
+无
+</td>
+<td>
+/opt/libs/
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_MEMORY_PER_NODE
+</td>
+<td>
+每个Ignite节点占用的内存的大小（M）
+</td>
+<td>
+2048
+</td>
+<td>
+1024
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_HOSTNAME_CONSTRAINT
+</td>
+<td>
+从节点约束
+</td>
+<td>
+无
+</td>
+<td>
+192.168.0.[1-100]
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_NODE_COUNT
+</td>
+<td>
+集群节点的数量
+</td>
+<td>
+3
+</td>
+<td>
+10
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_RUN_CPU_PER_NODE
+</td>
+<td>
+每个Ignite节点的CPU核数
+</td>
+<td>
+2
+</td>
+<td>
+4
+</td>
+</tr>
+<tr>
+<td>
+IGNITE_VERSION
+</td>
+<td>
+节点上运行的Ignite版本
+</td>
+<td>
+latest
+</td>
+<td>
+1.4.0
+</td>
+</tr>
+</table>
+
+## 2.13.SSL和TLS
+Ignite允许在所有节点之间使用SSL Socket进行通信。要使用SSL，需要设置`Factory<SSLContext>`以及设置Ignite配置文件的`SSL`段落，Ignite提供了一个默认的SSL上下文工厂，`org.apache.ignite.ssl.SslContextFactory`，他用一个配置好的keystore来初始化SSL上下文。
+XML：
+```xml
+<bean id="cfg" class="org.apache.ignite.configuration.IgniteConfiguration">
+  <property name="sslContextFactory">
+    <bean class="org.apache.ignite.ssl.SslContextFactory">
+      <property name="keyStoreFilePath" value="keystore/server.jks"/>
+      <property name="keyStorePassword" value="123456"/>
+      <property name="trustStoreFilePath" value="keystore/trust.jks"/>
+      <property name="trustStorePassword" value="123456"/>
+    </bean>
+  </property>
+</bean>
+```
+Java：
+```java
+IgniteConfiguration igniteCfg = new IgniteConfiguration();
+SslContextFactory factory = new SslContextFactory();
+factory.setKeyStoreFilePath("keystore/server.jks");
+factory.setKeyStorePassword("123456".toCharArray());
+factory.setTrustStoreFilePath("keystore/trust.jks");
+factory.setTrustStorePassword("123456".toCharArray());
+igniteCfg.setSslContextFactory(factory);
+```
+某些情况下需要禁用客户端侧的证书认证（比如连接到一个自签名的服务器时），这可以通过给上述工厂设置禁用信任管理器实现，他可以通过`getDisabledTrustManager`获得。
+XML:
+```xml
+<bean id="cfg" class="org.apache.ignite.configuration.IgniteConfiguration">
+  <property name="sslContextFactory">
+    <bean class="org.apache.ignite.ssl.SslContextFactory">
+      <property name="keyStoreFilePath" value="keystore/server.jks"/>
+      <property name="keyStorePassword" value="123456"/>
+      <property name="trustManagers">
+        <bean class="org.apache.ignite.ssl.SslContextFactory" factory-method="getDisabledTrustManager"/>
+     </property>
+    </bean>
+  </property>
+</bean>
+```
+Java:
+```java
+IgniteConfiguration igniteCfg = new IgniteConfiguration();
+SslContextFactory factory = new SslContextFactory();
+factory.setKeyStoreFilePath("keystore/server.jks");
+factory.setKeyStorePassword("123456".toCharArray());
+factory.setTrustManagers(SslContextFactory.getDisabledTrustManager());
+igniteCfg.setSslContextFactory(factory);
+```
+如果配置了安全，那么日志就会包括：`communication encrypted=on`
+```
+INFO: Security status [authentication=off, communication encrypted=on]
+```
+### 2.13.1.SSL和TLS
+Ignite允许使用不同的加密类型，支持的加密算法可以参照：[http://docs.oracle.com/javase/7/docs/technotes/guides/security/StandardNames.html#SSLContext](http://docs.oracle.com/javase/7/docs/technotes/guides/security/StandardNames.html#SSLContext),可以通过`setProtocol()`方法进行设置，默认值是`TLS`。
+XML：
+```xml
+<bean id="cfg" class="org.apache.ignite.configuration.IgniteConfiguration">
+  <property name="sslContextFactory">
+    <bean class="org.apache.ignite.ssl.SslContextFactory">
+      <property name="protocol" value="SSL"/>
+      ...
+    </bean>
+  </property>
+  ...
+</bean>
+```
+Java：
+```java
+IgniteConfiguration igniteCfg = new IgniteConfiguration();
+SslContextFactory factory = new SslContextFactory();
+...
+factory.setProtocol("TLS");
+igniteCfg.setSslContextFactory(factory);
+```
+### 2.13.2.配置
+下面的配置参数可以通过`SslContextFactory`进行配置：
+<table>
+<tr>
+<td>
+setter方法
+</td>
+<td>
+描述
+</td>
+<td>
+默认值
+</td>
+</tr>
+<tr>
+<td>
+setKeyAlgorithm
+</td>
+<td>
+设置key管理器算法，用于创建key管理器。注意，大多数情况下默认值即可，但是在Android平台需要设置成`X509`.
+</td>
+<td>
+SunX509
+</td>
+</tr>
+<tr>
+<td>
+setKeyStoreFilePath
+</td>
+<td>
+keystore文件路径，该参数为必须参数，否则SSL上下文无法初始化
+</td>
+<td>
+无
+</td>
+</tr>
+<tr>
+<td>
+setKeyStorePassword
+</td>
+<td>
+keystore密码
+</td>
+<td>
+无
+</td>
+</tr>
+<tr>
+<td>
+setKeyStoreType
+</td>
+<td>
+用于上下文初始化的keystore类型
+</td>
+<td>
+JKS
+</td>
+</tr>
+<tr>
+<td>
+setProtocol
+</td>
+<td>
+安全传输协议
+</td>
+<td>
+TLS
+</td>
+</tr>
+<tr>
+<td>
+setTrustStoreFilePath
+</td>
+<td>
+truststore文件路径
+</td>
+<td>
+无
+</td>
+</tr>
+<tr>
+<td>
+setTrustStorePassword
+</td>
+<td>
+truststore密码
+</td>
+<td>
+无
+</td>
+</tr>
+<tr>
+<td>
+setTrustStoreType
+</td>
+<td>
+用于上下文初始化的truststore类型
+</td>
+<td>
+JKS
+</td>
+</tr>
+<tr>
+<td>
+setTrustManagers
+</td>
+<td>
+设置配置好的信任管理器
+</td>
+<td>
+无
+</td>
+</tr>
+</table>
